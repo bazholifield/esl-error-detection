@@ -3,18 +3,14 @@ from datasets import Dataset
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments
 import numpy as np
 
-# --------------------------
-# CONFIG
-# --------------------------
-MODEL_NAME = "distilbert-base-uncased"  # smaller model for speed
+# config block
+MODEL_NAME = "distilbert-base-uncased"
 NUM_EPOCHS = 3
 BATCH_SIZE = 8
 LABEL_LIST = ["OK", "ERR"]
 LABEL_TO_ID = {label: i for i, label in enumerate(LABEL_LIST)}
 
-# --------------------------
-# HELPER FUNCTIONS
-# --------------------------
+# Helper functions (move this to another file later)
 
 def load_dataset(csv_path):
     """
@@ -23,12 +19,12 @@ def load_dataset(csv_path):
     """
     df = pd.read_csv(csv_path)
     
-    # Label a sentence as error if original_text != corrected_text
+    # label sentence as error if not the same as original text
     df["label"] = (df["original_text"] != df["corrected_text"]).astype(int)
     
-    # Only keep relevant columns for training
+    # only keep relevant columns
     ds = Dataset.from_pandas(df[["original_text", "label"]])
-    ds = ds.rename_column("original_text", "text")  # HF expects 'text'
+    ds = ds.rename_column("original_text", "text")
     return ds.train_test_split(test_size=0.2)
 
 def compute_metrics(eval_pred):
@@ -37,14 +33,12 @@ def compute_metrics(eval_pred):
     accuracy = (preds == labels).mean()
     return {"accuracy": accuracy}
 
-# --------------------------
-# MAIN TRAIN FUNCTION
-# --------------------------
+# train function
 
 def train_sentence_classifier(csv_path="data/processed/sentences.csv"):
     dataset_dict = load_dataset(csv_path)
     
-    # Load tokenizer & model
+    # Load tokenizer and model
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForSequenceClassification.from_pretrained(
         MODEL_NAME, num_labels=len(LABEL_LIST)
@@ -56,7 +50,7 @@ def train_sentence_classifier(csv_path="data/processed/sentences.csv"):
     
     tokenized_dataset = dataset_dict.map(tokenize)
     
-    # Training arguments (old-version-compatible)
+    # Training args
     args = TrainingArguments(
         output_dir="./results",
         learning_rate=5e-5,
