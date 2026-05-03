@@ -1,7 +1,7 @@
 """
 Dedicated article agreement checker for ESL error detection.
 Designed to run before the binary DistilBERT model as a fast pre-filter.
-Returns a list of article errors found in the sentence.
+Returns a list of (error_type, span) pairs found in the sentence.
 """
 
 import re
@@ -106,8 +106,9 @@ def _preceding_token_is_det(tok, doc) -> bool:
 
 # ── individual checks ──────────────────────────────────────────────────────────
 
-def check_a_an(doc) -> str | None:
-    """Flags wrong a/an choice based on the following word's sound."""
+def check_a_an(doc) -> list[tuple[str, str]]:
+    """Returns (type, article) pairs for wrong a/an choices."""
+    results = []
     tokens = list(doc)
     for i, tok in enumerate(tokens[:-1]):
         if tok.text.lower() not in ('a', 'an'):
@@ -118,34 +119,32 @@ def check_a_an(doc) -> str | None:
             continue
         vowel_sound = _starts_with_vowel_sound(next_word)
         if tok.text.lower() == 'a' and vowel_sound:
-            return A_AN_ERROR
-        if tok.text.lower() == 'an' and not vowel_sound:
-            return A_AN_ERROR
-    return None
+            results.append((A_AN_ERROR, tok.text))
+        elif tok.text.lower() == 'an' and not vowel_sound:
+            results.append((A_AN_ERROR, tok.text))
+    return results
 
 
-def check_unnecessary_article(doc) -> str | None:
-    """Flags articles placed before uncountable or proper nouns."""
+def check_unnecessary_article(doc) -> list[tuple[str, str]]:
+    """Returns (type, article) pairs for articles placed before uncountable or proper nouns."""
+    results = []
     for tok in doc:
         if tok.dep_ != 'det':
             continue
         head = tok.head
-        # a/an before uncountable noun → wrong
         if tok.text.lower() in ('a', 'an') and head.lemma_.lower() in UNCOUNTABLE_NOUNS:
-            return UNNECESSARY
-        # a/an/the before a proper noun that is not a title/organisation
-        # (e.g. "the London", "a Paris") — only flag a/an, 'the' is too ambiguous
-        if tok.text.lower() in ('a', 'an') and head.pos_ == 'PROPN':
-            return UNNECESSARY
-    return None
+            results.append((UNNECESSARY, tok.text))
+        elif tok.text.lower() in ('a', 'an') and head.pos_ == 'PROPN':
+            results.append((UNNECESSARY, tok.text))
+    return results
 
 
-def check_article_omission(doc) -> str | None:
+def check_article_omission(doc) -> list[tuple[str, str]]:
     """
-    Flags singular countable nouns in object/subject position that are
-    missing a determiner. Conservative — only fires on the ARTICLE_REQUIRED_NOUNS
-    whitelist to avoid false positives.
+    Returns (type, noun) pairs for singular countable nouns missing a determiner.
+    Conservative — only fires on the ARTICLE_REQUIRED_NOUNS whitelist.
     """
+    results = []
     for tok in doc:
         if (
             tok.tag_ == 'NN'
@@ -156,32 +155,29 @@ def check_article_omission(doc) -> str | None:
             and not _has_determiner(tok)
             and not _preceding_token_is_det(tok, doc)
         ):
-            return OMISSION
-    return None
+            results.append((OMISSION, tok.text))
+    return results
 
 
-def check_wrong_article(doc) -> str | None:
+def check_wrong_article(doc) -> list[tuple[str, str]]:
     """
-    Flags a/an used where the is clearly needed — when the noun has a
-    post-modifier that makes it uniquely identifiable (e.g. relative clause,
-    prepositional phrase, or superlative).
+    Returns (type, article) pairs for a/an used where the is clearly needed —
+    when the noun has a relative clause or superlative modifier.
     """
+    results = []
     for tok in doc:
         if tok.dep_ != 'det' or tok.text.lower() not in ('a', 'an'):
             continue
         head = tok.head
         if head.lemma_.lower() in UNCOUNTABLE_NOUNS:
             continue  # unnecessary article check handles these
-        # noun modified by a relative clause or prep phrase → likely needs "the"
         has_relcl = any(c.dep_ == 'relcl' for c in head.children)
-        has_prep   = any(c.dep_ == 'prep'  for c in head.children)
-        is_superl  = any(c.tag_ == 'JJS'   for c in head.children)  # superlative adj
+        is_superl  = any(c.tag_ == 'JJS'   for c in head.children)
         if has_relcl or is_superl:
-            return WRONG_ARTICLE
-        # "a/an + superlative adj + noun" e.g. "a biggest mistake"
-        if any(c.tag_ == 'JJS' and c.dep_ == 'amod' for c in head.children):
-            return WRONG_ARTICLE
-    return None
+            results.append((WRONG_ARTICLE, tok.text))
+        elif any(c.tag_ == 'JJS' and c.dep_ == 'amod' for c in head.children):
+            results.append((WRONG_ARTICLE, tok.text))
+    return results
 
 
 # ── main entry point ───────────────────────────────────────────────────────────
@@ -193,10 +189,17 @@ CHECKS = [
     check_wrong_article,
 ]
 
-def check_articles(sentence: str) -> list[str]:
+def check_articles(sentence: str) -> list[tuple[str, str]]:
     """
-    Returns a list of article errors found in the sentence.
+    Returns a list of (error_type, span) pairs for article errors in the sentence.
     Returns [] if no article errors detected.
     """
     doc = nlp(sentence)
-    return [result for check in CHECKS if (result := check(doc))]
+    seen = set()
+    results = []
+    for check in CHECKS:
+        for pair in check(doc):
+            if pair not in seen:
+                seen.add(pair)
+                results.append(pair)
+    return results

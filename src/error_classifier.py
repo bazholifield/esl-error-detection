@@ -1,7 +1,8 @@
 """
 Rule-based error classifier for ESL writing.
 Runs after binary DistilBERT detection to label the error type.
-Returns a list of all error types found in a sentence.
+Returns a list of (error_type, span) pairs found in a sentence.
+Article errors are handled by article_checker.py instead.
 """
 
 import re
@@ -16,13 +17,10 @@ spell = SpellChecker()
 SPELLING      = "Spelling error"
 SVA           = "Subject-verb agreement"
 PRONOUN       = "Pronoun case error"
-ARTICLE_AN    = "Article error (a/an)"
 TENSE         = "Verb tense error"
 MISSING_S     = "Missing -s ending"
 PRES_CONT     = "Present simple vs continuous"
 DOUBLE_NEG    = "Double negative"
-ART_OMISSION  = "Article omission"
-COUNTABLE     = "Countable/uncountable noun"
 IRREGULAR     = "Incorrect irregular form"
 RUN_ON        = "Run-on sentence"
 PREPOSITION   = "Preposition error"
@@ -92,26 +90,6 @@ PREPOSITION_ERRORS = {
     ('bored', 'from'):         'bored of/with',
     ('responsible', 'of'):     'responsible for',
     ('famous', 'by'):          'famous for',
-    ('addicted', 'to'):        'addicted to',  # this is correct - skip
-}
-
-# words that are often confused - checked against grammatical context
-CONFUSED_WORDS = {
-    'their': ('DET', 'poss'),       # possessive determiner
-    "they're": ('AUX', None),       # contraction of they are
-    'there': ('ADV', None),         # adverb/existential
-    'your': ('DET', 'poss'),
-    "you're": ('AUX', None),
-    'its': ('DET', 'poss'),
-    "it's": ('AUX', None),
-    'then': ('ADV', None),          # time adverb
-    'than': ('SCONJ', None),        # comparison
-    'affect': ('VERB', None),       # usually a verb
-    'effect': ('NOUN', None),       # usually a noun
-    'loose': ('ADJ', None),
-    'lose': ('VERB', None),
-    'advice': ('NOUN', None),
-    'advise': ('VERB', None),
 }
 
 OBJECT_PRONOUNS  = {'me', 'him', 'her', 'us', 'them'}
@@ -136,231 +114,195 @@ NUMBER_WORDS = {
 
 # ── individual checks ──────────────────────────────────────────────────────────
 
-def check_spelling(doc):
+def check_spelling(doc) -> list[tuple[str, str]]:
     words = [
         tok.text for tok in doc
         if tok.is_alpha and not tok.is_stop
         and tok.pos_ != 'PROPN'
         and tok.text.lower() not in INCORRECT_FORMS  # caught separately
     ]
-    return SPELLING if spell.unknown(words) else None
+    return [(SPELLING, w) for w in spell.unknown(words)]
 
 
-def check_subject_verb_agreement(doc):
+def check_subject_verb_agreement(doc) -> list[tuple[str, str]]:
+    results = []
     for tok in doc:
-        if tok.dep_ == 'nsubj' and tok.head.pos_ == 'VERB':
-            subj = tok.text.lower()
-            verb = tok.head
-            is_3sg = subj in ('he', 'she', 'it') or tok.tag_ == 'NN'
-            is_plural = subj in ('i', 'we', 'they', 'you') or tok.tag_ == 'NNS'
+        if tok.dep_ != 'nsubj' or tok.head.pos_ != 'VERB':
+            continue
+        subj = tok.text.lower()
+        verb = tok.head
+        is_3sg   = subj in ('he', 'she', 'it') or tok.tag_ == 'NN'
+        is_plural = subj in ('i', 'we', 'they', 'you') or tok.tag_ == 'NNS'
 
-            # check main verb
-            if is_3sg and verb.tag_ == 'VBP':
-                return SVA
-            if is_plural and verb.tag_ == 'VBZ':
-                return SVA
+        # main verb mismatch
+        if is_3sg and verb.tag_ == 'VBP':
+            results.append((SVA, verb.text))
+            continue
+        if is_plural and verb.tag_ == 'VBZ':
+            results.append((SVA, verb.text))
+            continue
 
-            # was/were with wrong subject
-            if subj in ('they', 'we', 'you') and verb.lemma_ == 'be' and verb.text.lower() == 'was':
-                return SVA
-            if subj in ('he', 'she', 'it') and verb.lemma_ == 'be' and verb.text.lower() == 'were':
-                return SVA
+        # was/were with wrong subject
+        if subj in ('they', 'we', 'you') and verb.lemma_ == 'be' and verb.text.lower() == 'was':
+            results.append((SVA, verb.text))
+            continue
+        if subj in ('he', 'she', 'it') and verb.lemma_ == 'be' and verb.text.lower() == 'were':
+            results.append((SVA, verb.text))
+            continue
 
-            # check auxiliaries (catches "she don't", "they doesn't", "they was sleeping")
-            for child in verb.children:
-                if child.dep_ in ('aux', 'auxpass') and child.lemma_ in ('do', 'have', 'be'):
-                    if is_3sg and child.tag_ == 'VBP':
-                        return SVA
-                    if is_plural and child.tag_ == 'VBZ':
-                        return SVA
-                    # was/were mismatch when be is auxiliary (e.g. "they was sleeping")
-                    if is_plural and child.lemma_ == 'be' and child.text.lower() == 'was':
-                        return SVA
-                    if is_3sg and child.lemma_ == 'be' and child.text.lower() == 'were':
-                        return SVA
-    return None
+        # check auxiliaries (catches "she don't", "they was sleeping")
+        for child in verb.children:
+            if child.dep_ in ('aux', 'auxpass') and child.lemma_ in ('do', 'have', 'be'):
+                if is_3sg and child.tag_ == 'VBP':
+                    results.append((SVA, child.text))
+                elif is_plural and child.tag_ == 'VBZ':
+                    results.append((SVA, child.text))
+                elif is_plural and child.lemma_ == 'be' and child.text.lower() == 'was':
+                    results.append((SVA, child.text))
+                elif is_3sg and child.lemma_ == 'be' and child.text.lower() == 'were':
+                    results.append((SVA, child.text))
+    return results
 
 
-def check_pronoun_case(doc):
+def check_pronoun_case(doc) -> list[tuple[str, str]]:
+    results = []
     for tok in doc:
         if tok.dep_ in ('nsubj', 'nsubjpass') and tok.text.lower() in OBJECT_PRONOUNS:
-            return PRONOUN
-        if tok.dep_ in ('dobj', 'pobj', 'iobj') and tok.text.lower() in SUBJECT_PRONOUNS:
-            return PRONOUN
-    return None
+            results.append((PRONOUN, tok.text))
+        elif tok.dep_ in ('dobj', 'pobj', 'iobj') and tok.text.lower() in SUBJECT_PRONOUNS:
+            results.append((PRONOUN, tok.text))
+    return results
 
 
-def check_article_an(doc):
-    tokens = list(doc)
-    for i, tok in enumerate(tokens[:-1]):
-        if tok.text.lower() in ('a', 'an'):
-            next_word = tokens[i + 1].text
-            starts_vowel = bool(re.match(r'^[aeiouAEIOU]', next_word))
-            if tok.text.lower() == 'a' and starts_vowel:
-                return ARTICLE_AN
-            if tok.text.lower() == 'an' and not starts_vowel:
-                return ARTICLE_AN
-    return None
-
-
-def check_verb_tense(doc):
-    # flag past tense verb in a clause that has present tense time markers
+def check_verb_tense(doc) -> list[tuple[str, str]]:
     present_markers = {'today', 'now', 'currently', 'this week', 'this year', 'nowadays'}
     has_present_marker = any(tok.text.lower() in present_markers for tok in doc)
-    if has_present_marker:
-        for tok in doc:
-            if tok.tag_ in ('VBD', 'VBN') and tok.dep_ not in ('aux', 'auxpass'):
-                return TENSE
-    return None
+    if not has_present_marker:
+        return []
+    return [
+        (TENSE, tok.text)
+        for tok in doc
+        if tok.tag_ in ('VBD', 'VBN') and tok.dep_ not in ('aux', 'auxpass')
+    ]
 
 
-def check_missing_s(doc):
+def check_missing_s(doc) -> list[tuple[str, str]]:
+    results = []
     tokens = list(doc)
     for i, tok in enumerate(tokens[:-1]):
         is_num = tok.like_num or tok.text.lower() in NUMBER_WORDS
-        is_one = tok.text in ('1', 'one') or (tok.like_num and tok.text == '1')
+        is_one = tok.text in ('1', 'one')
         if is_num and not is_one and tokens[i + 1].tag_ == 'NN':
-            return MISSING_S
-    return None
+            results.append((MISSING_S, tokens[i + 1].text))
+    return results
 
 
-def check_present_continuous(doc):
+def check_present_continuous(doc) -> list[tuple[str, str]]:
+    results = []
     for tok in doc:
-        # stative verb in progressive form
         if tok.tag_ == 'VBG' and tok.lemma_ in STATIVE_VERBS:
             if any(child.lemma_ == 'be' for child in tok.head.children):
-                return PRES_CONT
-    return None
+                results.append((PRES_CONT, tok.text))
+    return results
 
 
-def check_double_negative(doc):
+def check_double_negative(doc) -> list[tuple[str, str]]:
     neg_indefinites = {'nothing', 'nobody', 'nowhere', 'none', 'neither'}
     has_neg = any(tok.dep_ == 'neg' for tok in doc)
-    has_neg_indef = any(tok.text.lower() in neg_indefinites for tok in doc)
-    return DOUBLE_NEG if has_neg and has_neg_indef else None
+    if not has_neg:
+        return []
+    indef_toks = [tok for tok in doc if tok.text.lower() in neg_indefinites]
+    return [(DOUBLE_NEG, tok.text) for tok in indef_toks]
 
 
-def check_article_omission(doc):
-    for tok in doc:
-        if (
-            tok.tag_ == 'NN'
-            and tok.pos_ != 'PRON'
-            and tok.dep_ in ('dobj', 'pobj')
-            and tok.lemma_ not in UNCOUNTABLE_NOUNS
-            and tok.lemma_ not in ARTICLE_EXEMPT
-        ):
-            has_det = any(c.dep_ in ('det', 'poss', 'nummod') for c in tok.children)
-            has_adj_with_det = any(
-                any(c2.dep_ == 'det' for c2 in c.children)
-                for c in tok.children if c.dep_ == 'amod'
-            )
-            # also skip if a preceding token in the same phrase is a determiner
-            if tok.i > 0 and doc[tok.i - 1].dep_ == 'det':
-                continue
-            if not has_det and not has_adj_with_det:
-                return ART_OMISSION
-    return None
+def check_incorrect_forms(doc) -> list[tuple[str, str]]:
+    return [
+        (IRREGULAR, tok.text)
+        for tok in doc
+        if tok.text.lower() in INCORRECT_FORMS
+    ]
 
 
-def check_countable(doc):
-    for tok in doc:
-        # pluralized uncountable noun
-        if tok.tag_ == 'NNS' and tok.lemma_ in UNCOUNTABLE_NOUNS:
-            return COUNTABLE
-        # uncountable noun with a/an
-        if tok.dep_ == 'det' and tok.text.lower() in ('a', 'an'):
-            if tok.head.lemma_ in UNCOUNTABLE_NOUNS:
-                return COUNTABLE
-    return None
-
-
-def check_incorrect_forms(doc):
-    for tok in doc:
-        if tok.text.lower() in INCORRECT_FORMS:
-            return IRREGULAR
-    return None
-
-
-def check_run_on(doc):
+def check_run_on(doc) -> list[tuple[str, str]]:
+    results = []
     tokens = list(doc)
-    # comma splice: [subj + verb], [subj + verb] with only a comma between
     for i, tok in enumerate(tokens[1:-1], start=1):
-        if tok.text == ',':
-            left  = tokens[:i]
-            right = tokens[i + 1:]
-            right_starts_conj = right[0].pos_ == 'CCONJ' if right else False
-            # skip if left clause is subordinate (sconj, mark, advcl, relcl)
-            left_is_subordinate = any(
-                t.dep_ in ('mark', 'advcl', 'relcl') or t.pos_ == 'SCONJ'
-                for t in left
-            )
-            if (
-                not left_is_subordinate and
-                any(t.pos_ == 'VERB' and t.dep_ != 'aux' for t in left) and
-                any(t.dep_ == 'nsubj' for t in left) and
-                any(t.pos_ == 'VERB' and t.dep_ != 'aux' for t in right) and
-                any(t.dep_ == 'nsubj' for t in right) and
-                not right_starts_conj
-            ):
-                return RUN_ON
-    return None
+        if tok.text != ',':
+            continue
+        left  = tokens[:i]
+        right = tokens[i + 1:]
+        right_starts_conj = right[0].pos_ == 'CCONJ' if right else False
+        left_is_subordinate = any(
+            t.dep_ in ('mark', 'advcl', 'relcl') or t.pos_ == 'SCONJ'
+            for t in left
+        )
+        if (
+            not left_is_subordinate and
+            any(t.pos_ == 'VERB' and t.dep_ != 'aux' for t in left) and
+            any(t.dep_ == 'nsubj' for t in left) and
+            any(t.pos_ == 'VERB' and t.dep_ != 'aux' for t in right) and
+            any(t.dep_ == 'nsubj' for t in right) and
+            not right_starts_conj
+        ):
+            results.append((RUN_ON, ','))
+    return results
 
 
-def check_preposition(doc):
+def check_preposition(doc) -> list[tuple[str, str]]:
+    results = []
     tokens = list(doc)
     for i, tok in enumerate(tokens[:-1]):
         pair = (tok.lemma_.lower(), tokens[i + 1].text.lower())
         if pair in PREPOSITION_ERRORS:
-            return PREPOSITION
-    return None
+            results.append((PREPOSITION, tokens[i + 1].text))
+    return results
 
 
-def check_word_order(doc):
+def check_word_order(doc) -> list[tuple[str, str]]:
+    results = []
     tokens = list(doc)
     for i, tok in enumerate(tokens):
-        if tok.text.lower() in FREQ_ADVERBS:
-            # freq adverb should not come directly after a main verb (non-be)
-            if i > 0 and tokens[i - 1].pos_ == 'VERB' and tokens[i - 1].lemma_ != 'be':
-                return WORD_ORDER
-            # freq adverb should come after 'be', not before it
-            if i < len(tokens) - 1 and tokens[i + 1].lemma_ == 'be':
-                return WORD_ORDER
-    return None
+        if tok.text.lower() not in FREQ_ADVERBS:
+            continue
+        if i > 0 and tokens[i - 1].pos_ == 'VERB' and tokens[i - 1].lemma_ != 'be':
+            results.append((WORD_ORDER, tok.text))
+        elif i < len(tokens) - 1 and tokens[i + 1].lemma_ == 'be':
+            results.append((WORD_ORDER, tok.text))
+    return results
 
 
-def check_modifier(doc):
+def check_modifier(doc) -> list[tuple[str, str]]:
     tokens = list(doc)
-    # dangling participle: sentence opens with a VBG phrase before a comma
     if len(tokens) > 2 and tokens[0].tag_ == 'VBG':
         if any(tok.text == ',' for tok in tokens[:5]):
-            return MODIFIER
-    return None
+            return [(MODIFIER, tokens[0].text)]
+    return []
 
 
-def check_parallelism(doc):
+def check_parallelism(doc) -> list[tuple[str, str]]:
+    results = []
     for tok in doc:
-        if tok.dep_ == 'cc':
-            head = tok.head
-            conjuncts = [c for c in head.children if c.dep_ == 'conj']
-            if conjuncts:
-                tags = {head.tag_} | {c.tag_ for c in conjuncts}
-                # mixing gerund and infinitive/base form
-                if 'VBG' in tags and ('VB' in tags or 'VBP' in tags or 'TO' in tags):
-                    return PARALLELISM
-    return None
+        if tok.dep_ != 'cc':
+            continue
+        head = tok.head
+        conjuncts = [c for c in head.children if c.dep_ == 'conj']
+        if conjuncts:
+            tags = {head.tag_} | {c.tag_ for c in conjuncts}
+            if 'VBG' in tags and ('VB' in tags or 'VBP' in tags or 'TO' in tags):
+                results.append((PARALLELISM, tok.text))
+    return results
 
 
-def check_vague_pronoun(doc):
-    # multiple proper nouns / noun phrases + a pronoun that could refer to any of them
-    nouns   = [tok for tok in doc if tok.pos_ == 'PROPN']
-    pronouns = [tok for tok in doc if tok.pos_ == 'PRON' and tok.text.lower() in ('he', 'she', 'it', 'they', 'him', 'her', 'them')]
+def check_vague_pronoun(doc) -> list[tuple[str, str]]:
+    nouns    = [tok for tok in doc if tok.pos_ == 'PROPN']
+    pronouns = [tok for tok in doc if tok.pos_ == 'PRON'
+                and tok.text.lower() in ('he', 'she', 'it', 'they', 'him', 'her', 'them')]
     if len(nouns) >= 2 and pronouns:
-        return VAGUE_PRONOUN
-    return None
+        return [(VAGUE_PRONOUN, pronouns[0].text)]
+    return []
 
 
-def check_similar_words(doc):
-    # POS-based confusion checks
+def check_similar_words(doc) -> list[tuple[str, str]]:
     pos_errors = {
         ('their',   'ADV'):   SIMILAR_WORDS,
         ('there',   'DET'):   SIMILAR_WORDS,
@@ -378,27 +320,31 @@ def check_similar_words(doc):
         ('affect',  'NOUN'):  SIMILAR_WORDS,
         ('effect',  'VERB'):  SIMILAR_WORDS,
     }
-    for tok in doc:
-        if (tok.text.lower(), tok.pos_) in pos_errors:
-            return SIMILAR_WORDS
+    seen = set()
+    results = []
 
-    # "Their/Your going..." → likely "They're/You're going..."
-    # spaCy may parse as poss or nsubj depending on context
+    for tok in doc:
+        if (tok.text.lower(), tok.pos_) in pos_errors and tok.text not in seen:
+            seen.add(tok.text)
+            results.append((SIMILAR_WORDS, tok.text))
+
+    # "Their/Your going..." — spaCy may parse as poss or nsubj
     for tok in doc:
         if tok.text.lower() in ('their', 'your') and tok.dep_ in ('poss', 'nsubj'):
-            head = tok.head
-            if head.tag_ == 'VBG' and head.dep_ == 'ROOT':
-                return SIMILAR_WORDS
+            if tok.head.tag_ == 'VBG' and tok.head.dep_ == 'ROOT':
+                if tok.text not in seen:
+                    seen.add(tok.text)
+                    results.append((SIMILAR_WORDS, tok.text))
 
-    return None
+    return results
 
 
-def check_adj_adv(doc):
-    for tok in doc:
-        # adjective in advmod role (modifying verb) — should be adverb
-        if tok.pos_ == 'ADJ' and tok.dep_ == 'advmod' and tok.head.pos_ == 'VERB':
-            return ADJ_ADV
-    return None
+def check_adj_adv(doc) -> list[tuple[str, str]]:
+    return [
+        (ADJ_ADV, tok.text)
+        for tok in doc
+        if tok.pos_ == 'ADJ' and tok.dep_ == 'advmod' and tok.head.pos_ == 'VERB'
+    ]
 
 
 # ── main pipeline ─────────────────────────────────────────────────────────────
@@ -407,13 +353,10 @@ CHECKS = [
     check_spelling,
     check_subject_verb_agreement,
     check_pronoun_case,
-    check_article_an,
     check_verb_tense,
     check_missing_s,
     check_present_continuous,
     check_double_negative,
-    check_article_omission,
-    check_countable,
     check_incorrect_forms,
     check_run_on,
     check_preposition,
@@ -426,11 +369,13 @@ CHECKS = [
 ]
 
 
-def classify_errors(sentence: str) -> list[str]:
+def classify_errors(sentence: str) -> list[tuple[str, str]]:
     """
-    Takes a sentence, returns all error types found.
-    Returns [UNKNOWN] if no specific rule matches.
+    Takes a sentence, returns (error_type, span) pairs for all errors found.
+    Returns [(UNKNOWN, '')] if no specific rule matches.
     """
     doc = nlp(sentence)
-    errors = [result for check in CHECKS if (result := check(doc))]
-    return errors if errors else [UNKNOWN]
+    errors = []
+    for check in CHECKS:
+        errors.extend(check(doc))
+    return errors if errors else [(UNKNOWN, '')]
