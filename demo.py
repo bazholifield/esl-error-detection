@@ -1,11 +1,13 @@
 import argparse
 import torch
+import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 from config import CHECKPOINT_PATH
+from error_classifier import classify_errors
 
-LABEL_LIST = ["OK", "ERR"]
+THRESHOLD = 0.25  # low threshold = high recall; rule-based classifier handles false positives
 
 def load_model(checkpoint=CHECKPOINT_PATH):
     tokenizer = AutoTokenizer.from_pretrained(checkpoint, local_files_only=True)
@@ -17,8 +19,11 @@ def predict(text, tokenizer, model):
     inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=128)
     with torch.no_grad():
         logits = model(**inputs).logits
-    pred = torch.argmax(logits, dim=-1).item()
-    return LABEL_LIST[pred]
+    prob_err = F.softmax(logits, dim=-1)[0, 1].item()
+    if prob_err < THRESHOLD:
+        return "No error detected", []
+    error_types = classify_errors(text)
+    return "Error detected", error_types
 
 def main():
     parser = argparse.ArgumentParser(description="ESL Error Detector")
@@ -29,18 +34,22 @@ def main():
     tokenizer, model = load_model(args.checkpoint)
 
     if args.text:
-        result = predict(args.text, tokenizer, model)
-        print(f"Input:      {args.text}")
-        print(f"Prediction: {result}")
+        verdict, errors = predict(args.text, tokenizer, model)
+        print(f"Input:   {args.text}")
+        print(f"Result:  {verdict}")
+        if errors:
+            print(f"Type(s): {', '.join(errors)}")
     else:
-        # interactive mode
         print("ESL Error Detector — type a sentence to check, or 'quit' to exit.")
         while True:
             text = input("\n> ").strip()
             if text.lower() in ("quit", "exit", "q"):
                 break
             if text:
-                print(f"Prediction: {predict(text, tokenizer, model)}")
+                verdict, errors = predict(text, tokenizer, model)
+                print(f"Result:  {verdict}")
+                if errors:
+                    print(f"Type(s): {', '.join(errors)}")
 
 if __name__ == "__main__":
     main()
