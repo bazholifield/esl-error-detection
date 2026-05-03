@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESL Error Detector</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f1f5f9;
+      color: #1e293b;
+      min-height: 100vh;
+      padding: 48px 20px;
+    }
+
+    .container {
+      max-width: 760px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 1.8rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 6px;
+    }
+
+    .subtitle {
+      color: #64748b;
+      font-size: 0.97rem;
+      margin-bottom: 28px;
+    }
+
+    .card {
+      background: white;
+      border: 1.5px solid #e2e8f0;
+      border-radius: 14px;
+      padding: 24px;
+      margin-bottom: 16px;
+    }
+
+    textarea {
+      width: 100%;
+      height: 140px;
+      padding: 14px;
+      border: 1.5px solid #e2e8f0;
+      border-radius: 10px;
+      font-size: 1rem;
+      font-family: inherit;
+      line-height: 1.6;
+      resize: vertical;
+      outline: none;
+      transition: border-color 0.2s;
+      color: #1e293b;
+    }
+
+    textarea:focus { border-color: #3b82f6; }
+
+    .actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 12px;
+    }
+
+    button {
+      background: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 24px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    button:hover { background: #1d4ed8; }
+    button:disabled { background: #93c5fd; cursor: default; }
+
+    /* ── annotated output ─────────────────────────────── */
+
+    .output-card { display: none; }
+
+    .annotated-text {
+      font-size: 1.05rem;
+      line-height: 2.2;
+      word-wrap: break-word;
+    }
+
+    .error-word {
+      position: relative;
+      background: #fff7ed;
+      border-bottom: 2.5px solid #f97316;
+      border-radius: 3px 3px 0 0;
+      cursor: pointer;
+      display: inline;
+    }
+
+    .error-popup {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      background: white;
+      border: 1.5px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 10px 12px;
+      z-index: 100;
+      min-width: 250px;
+      max-width: 340px;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.1);
+      white-space: normal;
+      line-height: 1.5;
+    }
+
+    .error-word:hover .error-popup { display: block; }
+
+    .error-item + .error-item { margin-top: 8px; }
+
+    .error-type {
+      display: inline-block;
+      background: #fef3c7;
+      border: 1px solid #fcd34d;
+      border-radius: 20px;
+      padding: 3px 11px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: #92400e;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.15s;
+    }
+
+    .error-type:hover { background: #fde68a; }
+
+    .error-type::after {
+      content: ' ▾';
+      font-size: 0.7rem;
+      opacity: 0.6;
+    }
+
+    .error-lesson {
+      display: none;
+      margin-top: 6px;
+      padding: 8px 10px;
+      background: #f8fafc;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      color: #475569;
+      line-height: 1.6;
+    }
+
+    /* ── footer count ─────────────────────────────────── */
+
+    .error-count {
+      margin-top: 18px;
+      padding-top: 14px;
+      border-top: 1px solid #e2e8f0;
+      font-size: 0.93rem;
+      font-weight: 600;
+    }
+
+    .count-errors { color: #dc2626; }
+    .count-clean  { color: #16a34a; }
+
+    /* ── status messages ──────────────────────────────── */
+
+    .loading {
+      text-align: center;
+      color: #64748b;
+      padding: 20px;
+      font-size: 0.95rem;
+      display: none;
+    }
+
+    .error-msg {
+      color: #dc2626;
+      padding: 12px 16px;
+      background: #fef2f2;
+      border-radius: 10px;
+      font-size: 0.9rem;
+      display: none;
+    }
+
+    .hint {
+      color: #94a3b8;
+      font-size: 0.78rem;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>ESL Error Detector</h1>
+    <p class="subtitle">Type or paste a sentence or paragraph below.</p>
+
+    <div class="card">
+      <textarea id="input" placeholder="e.g. Yesterday I go to an university with my friend..."></textarea>
+      <p class="hint">Ctrl + Enter to submit</p>
+      <div class="actions">
+        <button id="check-btn" onclick="checkText()">Check &rarr;</button>
+      </div>
+    </div>
+
+    <div class="loading" id="loading">Analyzing&hellip;</div>
+    <div class="error-msg" id="error-msg"></div>
+
+    <div class="card output-card" id="output-card">
+      <div class="annotated-text" id="annotated-text"></div>
+      <div class="error-count" id="error-count"></div>
+    </div>
+  </div>
+
+  <script>
+    function escHtml(str) {
+      return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    async function checkText() {
+      const text = document.getElementById('input').value.trim();
+      if (!text) return;
+
+      const btn = document.getElementById('check-btn');
+      btn.disabled = true;
+
+      document.getElementById('loading').style.display = 'block';
+      document.getElementById('output-card').style.display = 'none';
+      document.getElementById('error-msg').style.display = 'none';
+
+      try {
+        const res = await fetch('/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        });
+        if (!res.ok) throw new Error('Server error');
+        const data = await res.json();
+        renderResults(data);
+      } catch {
+        const msg = document.getElementById('error-msg');
+        msg.textContent = 'Something went wrong. Is the server running?';
+        msg.style.display = 'block';
+      } finally {
+        document.getElementById('loading').style.display = 'none';
+        btn.disabled = false;
+      }
+    }
+
+    function renderResults(data) {
+      const container = document.getElementById('annotated-text');
+      const countEl   = document.getElementById('error-count');
+
+      let html = '';
+      data.sentences.forEach(sentence => {
+        sentence.tokens.forEach(token => {
+          const text = escHtml(token.text);
+          const ws   = token.whitespace ? ' ' : '';
+
+          if (token.errors.length > 0) {
+            html += `<span class="error-word">${text}`;
+            html += `<span class="error-popup">`;
+            token.errors.forEach(err => {
+              html += `<div class="error-item">`;
+              html += `<span class="error-type">${escHtml(err.type)}</span>`;
+              html += `<div class="error-lesson">${escHtml(err.lesson)}</div>`;
+              html += `</div>`;
+            });
+            html += `</span></span>${ws}`;
+          } else {
+            html += text + ws;
+          }
+        });
+        html += ' ';
+      });
+
+      container.innerHTML = html;
+
+      const n = data.total_errors;
+      if (n === 0) {
+        countEl.textContent = '✓ No errors found.';
+        countEl.className = 'error-count count-clean';
+      } else {
+        countEl.textContent = `${n} error${n === 1 ? '' : 's'} found`;
+        countEl.className = 'error-count count-errors';
+      }
+
+      document.getElementById('output-card').style.display = 'block';
+
+      // click a chip to expand/collapse the lesson
+      container.querySelectorAll('.error-type').forEach(chip => {
+        chip.addEventListener('click', e => {
+          e.stopPropagation();
+          const lesson = chip.nextElementSibling;
+          lesson.style.display = lesson.style.display === 'block' ? 'none' : 'block';
+        });
+      });
+    }
+
+    document.getElementById('input').addEventListener('keydown', e => {
+      if (e.key === 'Enter' && e.ctrlKey) checkText();
+    });
+  </script>
+</body>
+</html>

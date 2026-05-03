@@ -130,10 +130,41 @@ def _lesson(error_type: str, span: str) -> str:
     return LESSONS.get(error_type, '')
 
 
+def _annotate_tokens(doc, errors: list[Error]) -> list[dict]:
+    """Map errors onto spaCy tokens so the frontend can highlight individual words."""
+    # group errors by span text — multiple errors can share the same word
+    span_errors: dict[str, list[Error]] = {}
+    for err in errors:
+        if err.span:
+            span_errors.setdefault(err.span, []).append(err)
+
+    # find the first token index matching each span text
+    span_token_idx: dict[str, int] = {}
+    for i, tok in enumerate(doc):
+        if tok.text in span_errors and tok.text not in span_token_idx:
+            span_token_idx[tok.text] = i
+
+    token_errors: dict[int, list[Error]] = {
+        span_token_idx[span]: errs
+        for span, errs in span_errors.items()
+        if span in span_token_idx
+    }
+
+    return [
+        {
+            'text': tok.text,
+            'whitespace': tok.whitespace_,
+            'errors': [{'type': e.error_type, 'lesson': e.lesson} for e in token_errors.get(i, [])]
+        }
+        for i, tok in enumerate(doc)
+    ]
+
+
 def analyze(text: str, tokenizer, model, threshold: float = 0.25) -> list[dict]:
     """
     Analyze a sentence or paragraph.
-    Returns a list of per-sentence dicts: [{'sentence': str, 'errors': list[Error]}, ...]
+    Returns a list of per-sentence dicts:
+      [{'sentence': str, 'errors': list[Error], 'tokens': list[dict]}, ...]
     """
     doc = nlp(text)
     results = []
@@ -141,13 +172,13 @@ def analyze(text: str, tokenizer, model, threshold: float = 0.25) -> list[dict]:
         sent_text = sent.text.strip()
         if not sent_text:
             continue
-        errors = _analyze_sentence(sent_text, tokenizer, model, threshold)
-        results.append({'sentence': sent_text, 'errors': errors})
+        errors, tokens = _analyze_sentence(sent_text, tokenizer, model, threshold)
+        results.append({'sentence': sent_text, 'errors': errors, 'tokens': tokens})
     return results
 
 
-def _analyze_sentence(text: str, tokenizer, model, threshold: float) -> list[Error]:
-    """Run all checks on a single sentence and return Error objects."""
+def _analyze_sentence(text: str, tokenizer, model, threshold: float) -> tuple[list[Error], list[dict]]:
+    """Run all checks on a single sentence. Returns (errors, token_annotations)."""
     errors: list[Error] = []
     seen: set[tuple[str, str]] = set()
 
@@ -174,4 +205,6 @@ def _analyze_sentence(text: str, tokenizer, model, threshold: float) -> list[Err
             if t not in seen_types
         ])
 
-    return errors
+    doc = nlp(text)
+    tokens = _annotate_tokens(doc, errors)
+    return errors, tokens
