@@ -38,6 +38,8 @@ SUBJ_ORDER      = "Subject ordering"
 NEGATED_VERB    = "Incorrect verb form after auxiliary"
 INF_AFTER_PREP  = "Infinitive after preposition"
 GERUND_VERB     = "Gerund required after verb"
+INF_FORM        = "Wrong verb form after 'to'"
+MODAL_HAVE      = "Modal + 'had' error"
 UNKNOWN         = "Grammatical error (unclassified)"
 
 # ── word lists ─────────────────────────────────────────────────────────────────
@@ -461,11 +463,18 @@ def check_similar_words(doc) -> list[tuple[str, str]]:
 
 
 def check_adj_adv(doc) -> list[tuple[str, str]]:
-    return [
-        (ADJ_ADV, tok.text)
-        for tok in doc
-        if tok.pos_ == 'ADJ' and tok.dep_ == 'advmod' and tok.head.pos_ == 'VERB'
-    ]
+    results = []
+    for tok in doc:
+        if tok.pos_ != 'ADJ':
+            continue
+        if tok.dep_ == 'advmod' and tok.head.pos_ == 'VERB':
+            results.append((ADJ_ADV, tok.text))
+        elif tok.dep_ == 'acomp' and tok.head.pos_ == 'VERB':
+            # adjective as complement of a non-linking verb — should be an adverb
+            # e.g. "listens very careful" → "carefully"
+            if tok.head.lemma_.lower() not in LINKING_VERBS:
+                results.append((ADJ_ADV, tok.text))
+    return results
 
 
 def check_comparative(doc) -> list[tuple[str, str]]:
@@ -477,11 +486,11 @@ def check_comparative(doc) -> list[tuple[str, str]]:
         nxt   = tokens[i + 1]
         if lower == 'more':
             if nxt.tag_ == 'JJR':                       # more + -er form
-                results.append((COMPARATIVE, f"{tok.text} {nxt.text}"))
+                results.append((COMPARATIVE, nxt.text))
             elif nxt.text.lower() in ('good', 'bad'):   # more good/bad → better/worse
-                results.append((COMPARATIVE, f"{tok.text} {nxt.text}"))
-        elif lower == 'most' and nxt.tag_ == 'JJS':     # most + -est form
-            results.append((COMPARATIVE, f"{tok.text} {nxt.text}"))
+                results.append((COMPARATIVE, tok.text))
+        elif lower == 'most' and (nxt.tag_ == 'JJS' or nxt.text.lower().endswith('est')):
+            results.append((COMPARATIVE, nxt.text))
     return results
 
 
@@ -572,7 +581,8 @@ def check_doubled_subject(doc) -> list[tuple[str, str]]:
             # noun and pronoun must share the same governing verb
             if prev.head.i != tok.head.i:
                 continue
-            if has_comma and not has_relpron:
+            # flag if comma present, OR if noun and pronoun are immediately adjacent
+            if (has_comma or not between) and not has_relpron:
                 results.append((DOUBLED_SUBJ, tok.text))
                 break
 
@@ -593,6 +603,56 @@ def check_subject_ordering(doc) -> list[tuple[str, str]]:
             continue
         if tokens[i + 1].text.lower() == 'and' and tokens[i + 2].pos_ in ('NOUN', 'PROPN', 'PRON', 'DET', 'ADJ'):
             results.append((SUBJ_ORDER, tok.text))
+    return results
+
+
+def check_redundant_pronoun(doc) -> list[tuple[str, str]]:
+    """
+    Catches redundant personal pronoun in a relative clause where 'who' or 'which'
+    already fills the subject role: 'a man who he was arguing' → 'he' is redundant.
+    Uses 'who'/'which' only (not 'that') to avoid false positives on correct
+    relative clauses like 'the book that he read'.
+    """
+    personal = {'he', 'she', 'it', 'they', 'i', 'we'}
+    results = []
+    for tok in doc:
+        if tok.dep_ != 'nsubj' or tok.text.lower() not in personal:
+            continue
+        # verb already has 'who' or 'which' as any child → personal pronoun is redundant
+        if any(c.text.lower() in ('who', 'which') for c in tok.head.children):
+            results.append((DOUBLED_SUBJ, tok.text))
+    return results
+
+
+def check_infinitive_form(doc) -> list[tuple[str, str]]:
+    """
+    Catches wrong verb form directly after 'to' (infinitive marker):
+    'to accepts' → 'to accept', 'to going' → 'to go'.
+    Looks for verbs whose TO aux child is present but the verb tag is not VB.
+    """
+    results = []
+    for tok in doc:
+        if tok.pos_ != 'VERB' or tok.tag_ == 'VB':
+            continue
+        if any(c.tag_ == 'TO' and c.dep_ == 'aux' for c in tok.children):
+            results.append((INF_FORM, tok.text))
+    return results
+
+
+def check_modal_have(doc) -> list[tuple[str, str]]:
+    """
+    Catches 'should had', 'would had', 'could had' — after a modal, the auxiliary
+    must be 'have' (base form), not 'had' (past tense).
+    """
+    results = []
+    for tok in doc:
+        auxi = list(tok.children)
+        has_modal = any(c.tag_ == 'MD' for c in auxi)
+        if not has_modal:
+            continue
+        for child in auxi:
+            if child.lemma_ == 'have' and child.tag_ == 'VBD':
+                results.append((MODAL_HAVE, child.text))
     return results
 
 
@@ -647,8 +707,11 @@ CHECKS_TIER2 = [
     check_participial_adj,
     check_since_for_ago,
     check_doubled_subject,
+    check_redundant_pronoun,
     check_subject_ordering,
     check_infinitive_after_prep,
+    check_infinitive_form,
+    check_modal_have,
     check_gerund_after_verb,
 ]
 

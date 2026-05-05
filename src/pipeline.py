@@ -143,6 +143,15 @@ LESSONS = {
         "E.g., 'stop worrying' (not 'stop worry'), 'enjoy swimming' (not 'enjoy swim'), "
         "'avoid making' (not 'avoid make'), 'keep trying' (not 'keep try').",
 
+    "Wrong verb form after 'to'":
+        "After 'to', always use the base (infinitive) form of the verb. "
+        "E.g., 'to go' (not 'to going' or 'to goes'), 'to accept' (not 'to accepts'), "
+        "'to become' (not 'to becoming').",
+
+    "Modal + 'had' error":
+        "After modal verbs (should, would, could, might), use 'have' not 'had'. "
+        "E.g., 'should have gone' (not 'should had gone'), 'would have known' (not 'would had known').",
+
     "Grammatical error (unclassified)":
         "This sentence may contain a grammatical error that couldn't be automatically identified.",
 }
