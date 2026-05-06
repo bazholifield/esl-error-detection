@@ -153,9 +153,25 @@ LESSONS = {
         "E.g., 'should have gone' (not 'should had gone'), 'would have known' (not 'would had known').",
 
     "Wrong relative pronoun":
-        "Use 'that' or 'which' to introduce a relative clause after a noun — not 'what'. "
+        "Use 'who' for people and 'which'/'that' for things in relative clauses — not 'what'. "
         "'What' is used for free relative clauses with no antecedent ('I know what you mean'). "
-        "E.g., 'the book that I read' or 'the car which I bought' — not 'the book what I read'.",
+        "E.g., 'the person who called' (not 'which'), 'the book that I read' (not 'what').",
+
+    "Modal + infinitive error":
+        "After modal verbs (can, could, will, would, should, must, might, may), "
+        "use the bare infinitive — no 'to'. "
+        "E.g., 'She can speak French' (not 'can to speak'), 'you must go' (not 'must to go').",
+
+    "Much/many confusion":
+        "Use 'many' with countable nouns (things you can count individually) "
+        "and 'much' with uncountable nouns. "
+        "E.g., 'many friends', 'many books', 'many students' — not 'much friends'. "
+        "'Much' is correct for: 'much water', 'much advice', 'much information'.",
+
+    "Fewer/less error":
+        "Use 'fewer' with countable nouns and 'less' with uncountable nouns. "
+        "E.g., 'fewer students', 'fewer cars', 'fewer mistakes' — not 'less students'. "
+        "'Less' is correct for: 'less water', 'less time', 'less money'.",
 
     "Missing past participle":
         "After 'have', 'has', or 'had', use the past participle form of the verb (often ending in -ed or an irregular form). "

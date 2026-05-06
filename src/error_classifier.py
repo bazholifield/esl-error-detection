@@ -42,6 +42,9 @@ INF_FORM        = "Wrong verb form after 'to'"
 MODAL_HAVE      = "Modal + 'had' error"
 WRONG_REL_PRON  = "Wrong relative pronoun"
 HAVE_PART       = "Missing past participle"
+MODAL_TO_ERR    = "Modal + infinitive error"
+MUCH_MANY       = "Much/many confusion"
+FEWER_LESS      = "Fewer/less error"
 UNKNOWN         = "Grammatical error (unclassified)"
 
 # ── word lists ─────────────────────────────────────────────────────────────────
@@ -99,6 +102,12 @@ PREPOSITION_ERRORS = {
     ('bored', 'from'):       'bored of/with',
     ('responsible', 'of'):   'responsible for',
     ('famous', 'by'):        'famous for',
+    ('superior', 'than'):    'superior to',
+    ('inferior', 'than'):    'inferior to',
+    ('agree', 'in'):         'agree on/with',
+    ('laugh', 'of'):         'laugh at',
+    ('look', 'in'):          'look at',  # "look in" is sometimes valid but "look in X" for gazing is wrong
+    ('listen', 'in'):        'listen to',
 }
 
 OBJECT_PRONOUNS  = {'me', 'him', 'her', 'us', 'them'}
@@ -153,6 +162,30 @@ TIME_NOUNS_PERIOD = {
 # causative verbs whose object takes a bare infinitive complement
 # "have" excluded — too easily confused with possessive/auxiliary have
 CAUSATIVE_VERBS = {'make', 'let', 'help'}
+
+# person nouns that require 'who' not 'which' in relative clauses
+PERSON_NOUNS = {
+    'man', 'woman', 'person', 'people', 'boy', 'girl', 'teacher', 'student',
+    'doctor', 'nurse', 'friend', 'colleague', 'boss', 'employee', 'worker',
+    'child', 'kid', 'baby', 'parent', 'mother', 'father', 'sister', 'brother',
+    'husband', 'wife', 'partner', 'customer', 'client', 'patient', 'lawyer',
+    'stranger', 'neighbor', 'neighbour', 'classmate', 'roommate', 'teammate',
+    'chef', 'driver', 'manager', 'officer', 'soldier', 'scientist', 'artist',
+    'writer', 'speaker', 'listener', 'visitor', 'tourist', 'resident',
+}
+
+# verbs that DO NOT require a preposition but ESL learners often add one
+SUPERFLUOUS_PREPS = {
+    ('discuss', 'about'),
+    ('mention', 'about'),
+    ('explain', 'about'),
+    ('emphasize', 'about'),
+    ('stress', 'about'),
+    ('approach', 'to'),
+    ('enter', 'in'),
+    ('enter', 'into'),
+    ('marry', 'with'),
+}
 
 # causative/resultative verbs that use "to" + infinitive (catches "to becoming")
 CAUSATIVE_INF_VERBS = {'cause', 'allow', 'force', 'enable', 'help', 'get', 'compel', 'encourage'}
@@ -701,19 +734,74 @@ def check_gerund_after_verb(doc) -> list[tuple[str, str]]:
 
 def check_wrong_rel_pronoun(doc) -> list[tuple[str, str]]:
     """
-    Catches 'what' used as a relative pronoun after an explicit noun antecedent:
-    'the items what I bought' → should be 'that' or 'which'.
+    Catches two patterns:
+    - 'what' used as a relative pronoun after a noun: 'the items what I bought' → that/which
+    - 'which' used for a person antecedent: 'the man which called' → who
     Free relative clauses ('what I want is...') are not flagged.
     """
     results = []
     for tok in doc:
-        if tok.text.lower() != 'what' or tok.tag_ != 'WP':
+        lower = tok.text.lower()
+        # "what" after any explicit noun antecedent
+        if lower == 'what' and tok.tag_ == 'WP':
+            if tok.dep_ not in ('nsubj', 'dobj', 'pobj', 'attr'):
+                continue
+            verb = tok.head
+            if verb.dep_ == 'relcl' and verb.head.pos_ in ('NOUN', 'PROPN'):
+                results.append((WRONG_REL_PRON, tok.text))
+        # "which" when the antecedent noun is a person (should be "who")
+        elif lower == 'which' and tok.tag_ == 'WDT':
+            if tok.dep_ not in ('nsubj', 'nsubjpass', 'dobj', 'pobj'):
+                continue
+            verb = tok.head
+            if verb.dep_ == 'relcl' and verb.head.lemma_.lower() in PERSON_NOUNS:
+                results.append((WRONG_REL_PRON, tok.text))
+    return results
+
+
+def check_modal_to(doc) -> list[tuple[str, str]]:
+    """
+    Catches 'can to swim', 'must to go' — modal verbs don't take 'to' before the infinitive.
+    Flags the redundant 'to' token.
+    """
+    results = []
+    for tok in doc:
+        if tok.pos_ != 'VERB' or tok.tag_ != 'VB':
             continue
-        if tok.dep_ not in ('nsubj', 'dobj', 'pobj', 'attr'):
+        has_modal = any(c.tag_ == 'MD' and c.dep_ == 'aux' for c in tok.children)
+        to_tok = next((c for c in tok.children if c.tag_ == 'TO' and c.dep_ == 'aux'), None)
+        if has_modal and to_tok:
+            results.append((MODAL_TO_ERR, to_tok.text))
+    return results
+
+
+def check_much_many(doc) -> list[tuple[str, str]]:
+    """
+    Catches 'much' used with countable plural nouns: 'much books' → 'many books'.
+    """
+    results = []
+    tokens = list(doc)
+    for i, tok in enumerate(tokens[:-1]):
+        if tok.text.lower() != 'much':
             continue
-        verb = tok.head
-        if verb.dep_ == 'relcl' and verb.head.pos_ in ('NOUN', 'PROPN'):
-            results.append((WRONG_REL_PRON, tok.text))
+        nxt = tokens[i + 1]
+        if nxt.tag_ == 'NNS' and nxt.lemma_.lower() not in UNCOUNTABLE_NOUNS:
+            results.append((MUCH_MANY, tok.text))
+    return results
+
+
+def check_fewer_less(doc) -> list[tuple[str, str]]:
+    """
+    Catches 'less' used with countable plural nouns: 'less students' → 'fewer students'.
+    """
+    results = []
+    tokens = list(doc)
+    for i, tok in enumerate(tokens[:-1]):
+        if tok.text.lower() != 'less':
+            continue
+        nxt = tokens[i + 1]
+        if nxt.tag_ == 'NNS' and nxt.lemma_.lower() not in UNCOUNTABLE_NOUNS:
+            results.append((FEWER_LESS, tok.text))
     return results
 
 
@@ -803,6 +891,9 @@ CHECKS_TIER2 = [
     check_wrong_rel_pronoun,
     check_have_participle,
     check_causative_form,
+    check_modal_to,
+    check_much_many,
+    check_fewer_less,
 ]
 
 # Tier 3 (prob_err ≥ 0.55): context-dependent rules with higher false-positive risk.
