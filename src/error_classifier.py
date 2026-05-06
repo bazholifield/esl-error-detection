@@ -151,7 +151,8 @@ TIME_NOUNS_PERIOD = {
 }
 
 # causative verbs whose object takes a bare infinitive complement
-CAUSATIVE_VERBS = {'make', 'let', 'have', 'help'}
+# "have" excluded — too easily confused with possessive/auxiliary have
+CAUSATIVE_VERBS = {'make', 'let', 'help'}
 
 # causative/resultative verbs that use "to" + infinitive (catches "to becoming")
 CAUSATIVE_INF_VERBS = {'cause', 'allow', 'force', 'enable', 'help', 'get', 'compel', 'encourage'}
@@ -216,7 +217,7 @@ def _sva_check_verb(verb, is_3sg: bool, is_plural: bool) -> list[tuple[str, str]
 def check_subject_verb_agreement(doc) -> list[tuple[str, str]]:
     results = []
     for tok in doc:
-        if tok.dep_ != 'nsubj' or tok.head.pos_ not in ('VERB', 'AUX'):
+        if tok.dep_ not in ('nsubj', 'nsubjpass') or tok.head.pos_ not in ('VERB', 'AUX'):
             continue
         verb = tok.head
 
@@ -724,13 +725,14 @@ def check_have_participle(doc) -> list[tuple[str, str]]:
     """
     results = []
     for tok in doc:
-        if tok.lemma_ != 'have' or tok.tag_ not in ('VBZ', 'VBP', 'VBD'):
+        if tok.tag_ != 'VB' or tok.pos_ != 'VERB':
             continue
         for child in tok.children:
-            if child.dep_ == 'xcomp' and child.tag_ == 'VB':
-                has_to = any(c.tag_ == 'TO' for c in child.children)
+            if child.dep_ == 'aux' and child.lemma_ == 'have':
+                has_to = any(c.tag_ == 'TO' for c in tok.children)
                 if not has_to:
-                    results.append((HAVE_PART, child.text))
+                    results.append((HAVE_PART, tok.text))
+                    break
     return results
 
 
@@ -738,14 +740,20 @@ def check_causative_form(doc) -> list[tuple[str, str]]:
     """
     Catches inflected verb (VBZ) in the bare-infinitive slot after causative verbs:
     'make me feels' → 'make me feel'.
+    Skips complement verbs whose subject is a relative pronoun (WDT) to avoid
+    flagging embedded relative clauses like 'which is something I never do'.
     """
     results = []
     for tok in doc:
         if tok.lemma_.lower() not in CAUSATIVE_VERBS:
             continue
         for child in tok.children:
-            if child.dep_ in ('ccomp', 'xcomp') and child.tag_ == 'VBZ':
-                results.append((INF_FORM, child.text))
+            if child.dep_ not in ('ccomp', 'xcomp') or child.tag_ != 'VBZ':
+                continue
+            nsubj = next((c for c in child.children if c.dep_ == 'nsubj'), None)
+            if nsubj is not None and nsubj.tag_ == 'WDT':
+                continue
+            results.append((INF_FORM, child.text))
     return results
 
 
