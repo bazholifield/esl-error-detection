@@ -190,11 +190,27 @@ SUPERFLUOUS_PREPS = {
 # causative/resultative verbs that use "to" + infinitive (catches "to becoming")
 CAUSATIVE_INF_VERBS = {'cause', 'allow', 'force', 'enable', 'help', 'get', 'compel', 'encourage'}
 
-# verbs that require a gerund (-ing) complement, not a bare infinitive
-GERUND_VERBS = {
-    'stop', 'finish', 'keep', 'enjoy', 'avoid', 'consider', 'suggest',
-    'practice', 'quit', 'miss', 'risk', 'delay', 'postpone', 'deny',
-    'resist', 'recall', 'admit', 'mind', 'recommend', 'give',
+# verbs that ONLY accept gerund complements — infinitive is always wrong
+GERUND_ONLY_VERBS = {
+    'enjoy', 'avoid', 'keep', 'miss', 'risk', 'resist', 'mind', 'deny',
+    'delay', 'postpone', 'suggest', 'recommend', 'practice', 'quit', 'give',
+}
+
+# verbs that accept gerund OR infinitive (different meanings) —
+# 'stop to rest' (purpose) vs 'stop smoking' (quit) — both valid, don't flag TO+VB
+GERUND_OR_INF_VERBS = {
+    'stop', 'finish', 'consider', 'admit', 'recall', 'remember', 'forget',
+    'try', 'continue', 'begin', 'start', 'like', 'prefer', 'hate', 'love',
+}
+
+GERUND_VERBS = GERUND_ONLY_VERBS | GERUND_OR_INF_VERBS
+
+# verbs where "verb + to + VBG" is the CORRECT construction (prep + gerund object)
+# e.g. "resort to lying", "look forward to going", "be/get used to doing"
+VERB_TO_GERUND = {
+    'resort', 'amount', 'lead', 'object', 'commit', 'devote', 'adapt', 'adjust',
+    'limit', 'contribute', 'look', 'use', 'accustom', 'belong', 'get',
+    'confess', 'reduce', 'stoop',
 }
 
 # prepositions that require a gerund (-ing), not an infinitive
@@ -228,8 +244,9 @@ def _sva_check_verb(verb, is_3sg: bool, is_plural: bool) -> list[tuple[str, str]
         results.append((SVA, verb.text))
     elif is_3sg and verb.tag_ == 'VB':
         # bare form in main clause with 3sg subject (e.g. "she speak") — missing -s
+        # exclude: modal aux, do-support, or TO (infinitive position — not a finite verb)
         has_modal_or_do = any(
-            c.dep_ == 'aux' and (c.tag_ == 'MD' or c.lemma_ == 'do')
+            c.dep_ == 'aux' and (c.tag_ in ('MD', 'TO') or c.lemma_ == 'do')
             for c in verb.children
         )
         if not has_modal_or_do:
@@ -249,13 +266,25 @@ def _sva_check_verb(verb, is_3sg: bool, is_plural: bool) -> list[tuple[str, str]
 
 def check_subject_verb_agreement(doc) -> list[tuple[str, str]]:
     results = []
+
+    # existential "there is/are" — the real subject is the attr noun, not "there"
+    for tok in doc:
+        if tok.dep_ == 'expl' and tok.text.lower() == 'there':
+            verb = tok.head
+            if verb.lemma_ == 'be':
+                attr = next((c for c in verb.children if c.dep_ == 'attr'), None)
+                if attr and attr.tag_ in ('NN', 'NNP'):
+                    results.extend(_sva_check_verb(verb, is_3sg=True, is_plural=False))
+                elif attr and attr.tag_ in ('NNS', 'NNPS'):
+                    results.extend(_sva_check_verb(verb, is_3sg=False, is_plural=True))
+
     for tok in doc:
         if tok.dep_ not in ('nsubj', 'nsubjpass') or tok.head.pos_ not in ('VERB', 'AUX'):
             continue
         verb = tok.head
 
-        # relative pronoun subject (which/that) — inherit number from antecedent noun
-        if tok.tag_ == 'WDT' and verb.dep_ == 'relcl':
+        # relative pronoun subject (who/which/that) — inherit number from antecedent noun
+        if tok.tag_ in ('WDT', 'WP') and verb.dep_ == 'relcl':
             antecedent = verb.head
             if antecedent.tag_ in ('NN', 'NNP'):
                 results.extend(_sva_check_verb(verb, is_3sg=True, is_plural=False))
@@ -288,6 +317,11 @@ def check_pronoun_case(doc) -> list[tuple[str, str]]:
         if tok.dep_ in ('nsubj', 'nsubjpass') and tok.text.lower() in OBJECT_PRONOUNS:
             results.append((PRONOUN, tok.text))
         elif tok.dep_ in ('dobj', 'pobj', 'iobj') and tok.text.lower() in SUBJECT_PRONOUNS:
+            results.append((PRONOUN, tok.text))
+        # "between you and I" — "I" is conj of "you" (pobj), inherits object role
+        elif (tok.dep_ == 'conj'
+              and tok.text.lower() in SUBJECT_PRONOUNS
+              and tok.head.dep_ in ('pobj', 'dobj', 'iobj')):
             results.append((PRONOUN, tok.text))
     return results
 
@@ -402,12 +436,23 @@ def check_run_on(doc) -> list[tuple[str, str]]:
 
 
 def check_preposition(doc) -> list[tuple[str, str]]:
+    """
+    Uses dependency structure (word → prep child) rather than consecutive token pairs,
+    so 'accused him for' is caught even with an object between verb and preposition.
+    Checks both lemma and surface form to handle inflected forms like 'married'/'marry'.
+    """
     results = []
-    tokens = list(doc)
-    for i, tok in enumerate(tokens[:-1]):
-        pair = (tok.lemma_.lower(), tokens[i + 1].text.lower())
-        if pair in PREPOSITION_ERRORS:
-            results.append((PREPOSITION, tok.text))
+    for tok in doc:
+        for child in tok.children:
+            if child.dep_ != 'prep':
+                continue
+            prep = child.text.lower()
+            if (tok.lemma_.lower(), prep) in PREPOSITION_ERRORS:
+                results.append((PREPOSITION, tok.text))
+                break
+            elif (tok.text.lower(), prep) in PREPOSITION_ERRORS:
+                results.append((PREPOSITION, tok.text))
+                break
     return results
 
 
@@ -425,21 +470,54 @@ def check_word_order(doc) -> list[tuple[str, str]]:
 
 
 def check_modifier(doc) -> list[tuple[str, str]]:
+    """
+    Catches dangling/misplaced participial phrase at sentence start:
+    'Running to catch the bus, my bag fell' — the bag wasn't running.
+    Skips when the main clause subject is a personal pronoun (likely correct).
+    """
     tokens = list(doc)
-    if len(tokens) > 2 and tokens[0].tag_ == 'VBG':
-        if any(tok.text == ',' for tok in tokens[:5]):
-            return [(MODIFIER, tokens[0].text)]
-    return []
+    if len(tokens) <= 2 or tokens[0].tag_ != 'VBG':
+        return []
+    # allow comma up to position 10 to handle longer participial phrases
+    if not any(tok.text == ',' for tok in tokens[:10]):
+        return []
+    personal = {'i', 'he', 'she', 'we', 'they', 'you'}
+    for tok in doc:
+        if tok.dep_ == 'nsubj' and tok.head.dep_ == 'ROOT':
+            if tok.text.lower() in personal:
+                return []  # "Looking out the window, I saw..." — correct
+    return [(MODIFIER, tokens[0].text)]
 
 
 def check_parallelism(doc) -> list[tuple[str, str]]:
+    """
+    Catches mismatched verb forms in coordinate lists:
+    'swimming, running, and to dance' → all should be VBG.
+    Also traverses into dobj/xcomp subtrees since spaCy may attach the first
+    list item as dobj (NN) and the rest as conj children of that item.
+    When head is itself a conj, includes head.head (the coord root) in items so
+    spaCy parses like 'reading(VBG dobj), writing(NN conj), paint(VB conj)'
+    still detect the VBG vs VB mismatch.
+    """
     results = []
     for tok in doc:
         if tok.dep_ != 'cc':
             continue
-        conjuncts = [c for c in tok.head.children if c.dep_ == 'conj']
-        if conjuncts:
-            tags = {tok.head.tag_} | {c.tag_ for c in conjuncts}
+        head = tok.head
+        direct_conj = [c for c in head.children if c.dep_ == 'conj']
+        # when head is itself a conj node, include the coordination root
+        coord_root = head.head if head.dep_ == 'conj' else None
+        # also look at the primary object and its conj chain
+        primary_obj = next(
+            (c for c in head.children if c.dep_ in ('dobj', 'xcomp') and c.pos_ in ('VERB', 'NOUN')),
+            None
+        )
+        obj_conj = [c for c in primary_obj.children if c.dep_ == 'conj'] if primary_obj else []
+
+        base = ([coord_root] if coord_root else []) + ([primary_obj] if primary_obj else [head])
+        all_items = base + obj_conj + direct_conj
+        if len(all_items) >= 2:
+            tags = {item.tag_ for item in all_items}
             if 'VBG' in tags and ('VB' in tags or 'VBP' in tags or 'TO' in tags):
                 results.append((PARALLELISM, tok.text))
     return results
@@ -466,6 +544,9 @@ def check_there_their_theyre(doc) -> list[tuple[str, str]]:
                 results.append((THERE_THEIR, tok.text))
             # "their" functioning as an adverb → should be "there"
             elif tok.pos_ == 'ADV':
+                results.append((THERE_THEIR, tok.text))
+            # "their" used as object of a preposition of location (e.g. "over their") → "there"
+            elif tok.dep_ == 'pobj' and tok.head.dep_ == 'prep':
                 results.append((THERE_THEIR, tok.text))
 
         elif lower == 'there':
@@ -522,8 +603,15 @@ def check_adj_adv(doc) -> list[tuple[str, str]]:
         if tok.dep_ == 'advmod' and tok.head.pos_ == 'VERB':
             results.append((ADJ_ADV, tok.text))
         elif tok.dep_ == 'acomp' and tok.head.pos_ == 'VERB':
-            # adjective as complement of a non-linking verb — should be an adverb
-            # e.g. "listens very careful" → "carefully"
+            if tok.head.lemma_.lower() not in LINKING_VERBS:
+                results.append((ADJ_ADV, tok.text))
+        # spaCy sometimes mislabels standalone adj-as-adverb as advcl
+        # e.g. "speaks English very good" → 'good' dep=advcl of 'speaks'
+        elif tok.dep_ == 'advcl' and tok.head.pos_ == 'VERB':
+            results.append((ADJ_ADV, tok.text))
+        # open predicative complement after non-linking verb
+        # e.g. "sings beautiful" → 'beautiful' dep=oprd of 'sings'
+        elif tok.dep_ == 'oprd' and tok.head.pos_ == 'VERB':
             if tok.head.lemma_.lower() not in LINKING_VERBS:
                 results.append((ADJ_ADV, tok.text))
     return results
@@ -552,8 +640,9 @@ def check_participial_adj(doc) -> list[tuple[str, str]]:
     adjectives with a personal pronoun subject — usually should be the '-ed' form.
     E.g., 'I am very interesting' → should be 'interested'.
     Handles elided subjects in conjoined clauses: 'I went and was very surprising'.
-    For third-person pronouns, only flags when the adj has an experiencer prep
-    ('in', 'about') to avoid false positives like 'the cashier was boring'.
+    For 'feel' (always experiential), flags all personal pronouns.
+    For 'be', also flags when a temporal prep (after/before/during) is attached —
+    'she was very tiring after the journey' signals experienced, not caused, state.
     """
     results = []
     personal = {'i', 'he', 'she', 'we', 'they'}
@@ -572,14 +661,22 @@ def check_participial_adj(doc) -> list[tuple[str, str]]:
             continue
         if subj.text.lower() == 'i':
             results.append((PARTICIPIAL_ADJ, tok.text))
+        elif verb.lemma_.lower() == 'feel':
+            # 'feel' is inherently experiential — 'he felt boring' almost always means 'bored'
+            results.append((PARTICIPIAL_ADJ, tok.text))
         else:
-            # for he/she/we/they only flag when there's an experiencer preposition
-            # ('interested in X', 'excited about X') — reduces false positives
+            # for he/she/we/they flag when there's an experiencer preposition
+            # ('interested in X', 'excited about X') or a temporal context
+            # ('very tiring after the journey' → person experienced tiredness)
             has_experiencer_prep = any(
                 c.dep_ == 'prep' and c.text.lower() in ('in', 'about')
                 for c in tok.children
             )
-            if has_experiencer_prep:
+            has_temporal_context = any(
+                c.dep_ == 'prep' and c.text.lower() in ('after', 'before', 'during')
+                for c in verb.children
+            )
+            if has_experiencer_prep or has_temporal_context:
                 results.append((PARTICIPIAL_ADJ, tok.text))
     return results
 
@@ -619,6 +716,16 @@ def check_doubled_subject(doc) -> list[tuple[str, str]]:
                 continue
             if prev.dep_ in hard_excluded:
                 continue
+            # skip temporal noun phrases only ("Last week", "This morning", etc.)
+            if prev.dep_ in ('npadvmod', 'tmod', 'advmod'):
+                is_temporal = (
+                    prev.lemma_.lower() in TIME_NOUNS_PERIOD
+                    or prev.lemma_.lower() in TIME_UNITS
+                    or any(c.text.lower() in ('last', 'next', 'this', 'every', 'each')
+                           for c in prev.children)
+                )
+                if is_temporal:
+                    continue
             # bare time/manner nouns (Yesterday, Today...) have no determiner — skip them
             if prev.pos_ == 'NOUN':
                 has_det = any(c.dep_ in ('det', 'poss', 'amod') for c in prev.children)
@@ -689,15 +796,21 @@ def check_infinitive_form(doc) -> list[tuple[str, str]]:
             continue
         if any(c.tag_ == 'TO' and c.dep_ == 'aux' for c in tok.children):
             results.append((INF_FORM, tok.text))
-    # catch ADP "to" + VBG pcomp after causative/resultative verbs
+    # catch ADP "to" + VBG pcomp when "to" is attached to any VERB (not ADJ/ADV)
+    # e.g. "tried to running", "plan to working" — "to" should be infinitive marker
+    # Excludes verbs where "to + VBG" is correct (resort to lying, commit to doing)
     for tok in doc:
         if tok.tag_ != 'VBG' or tok.dep_ != 'pcomp':
             continue
         prep = tok.head
         if prep.pos_ != 'ADP' or prep.text.lower() != 'to':
             continue
-        if prep.head.lemma_.lower() in CAUSATIVE_INF_VERBS:
-            results.append((INF_FORM, tok.text))
+        head = prep.head
+        if head.pos_ not in ('VERB', 'AUX'):
+            continue  # "looking forward to going" — "forward" is ADV, not VERB
+        if head.lemma_.lower() in VERB_TO_GERUND:
+            continue  # "resort to lying", "be used to going" — correct constructions
+        results.append((INF_FORM, tok.text))
     return results
 
 
@@ -721,15 +834,23 @@ def check_modal_have(doc) -> list[tuple[str, str]]:
 def check_gerund_after_verb(doc) -> list[tuple[str, str]]:
     """
     Catches bare infinitive where a gerund is required:
-    'stop worry' → 'stop worrying', 'enjoy swim' → 'enjoy swimming'.
+    'enjoy swim' → 'enjoy swimming', 'avoid talk' → 'avoid talking'.
+    For GERUND_OR_INF_VERBS (stop, finish...), skips when TO is present —
+    'stopped to rest' is a valid purpose infinitive.
     """
-    return [
-        (GERUND_VERB, tok.text)
-        for tok in doc
-        if tok.dep_ == 'xcomp'
-        and tok.tag_ == 'VB'
-        and tok.head.lemma_.lower() in GERUND_VERBS
-    ]
+    results = []
+    for tok in doc:
+        if tok.dep_ != 'xcomp' or tok.tag_ != 'VB':
+            continue
+        head_lemma = tok.head.lemma_.lower()
+        if head_lemma not in GERUND_VERBS:
+            continue
+        # For ambiguous verbs (stop/finish/...), TO+VB is a valid purpose infinitive
+        has_to = any(c.tag_ == 'TO' for c in tok.children)
+        if has_to and head_lemma in GERUND_OR_INF_VERBS:
+            continue
+        results.append((GERUND_VERB, tok.text))
+    return results
 
 
 def check_wrong_rel_pronoun(doc) -> list[tuple[str, str]]:
@@ -738,6 +859,7 @@ def check_wrong_rel_pronoun(doc) -> list[tuple[str, str]]:
     - 'what' used as a relative pronoun after a noun: 'the items what I bought' → that/which
     - 'which' used for a person antecedent: 'the man which called' → who
     Free relative clauses ('what I want is...') are not flagged.
+    Handles both dep=relcl (normal) and dep=csubj (parser mis-attachment).
     """
     results = []
     for tok in doc:
@@ -749,6 +871,18 @@ def check_wrong_rel_pronoun(doc) -> list[tuple[str, str]]:
             verb = tok.head
             if verb.dep_ == 'relcl' and verb.head.pos_ in ('NOUN', 'PROPN'):
                 results.append((WRONG_REL_PRON, tok.text))
+            elif verb.dep_ == 'csubj':
+                # spaCy sometimes parses embedded relative clause as csubj
+                # e.g. "All the items what she bought were on sale"
+                # Check that there's a noun nsubj earlier in the sentence (the antecedent)
+                head_verb = verb.head
+                antecedent = next(
+                    (c for c in head_verb.children
+                     if c.dep_ == 'nsubj' and c.pos_ in ('NOUN', 'PROPN') and c.i < tok.i),
+                    None
+                )
+                if antecedent is not None:
+                    results.append((WRONG_REL_PRON, tok.text))
         # "which" when the antecedent noun is a person (should be "who")
         elif lower == 'which' and tok.tag_ == 'WDT':
             if tok.dep_ not in ('nsubj', 'nsubjpass', 'dobj', 'pobj'):
@@ -762,16 +896,21 @@ def check_wrong_rel_pronoun(doc) -> list[tuple[str, str]]:
 def check_modal_to(doc) -> list[tuple[str, str]]:
     """
     Catches 'can to swim', 'must to go' — modal verbs don't take 'to' before the infinitive.
+    In spaCy's parse, 'can' is ROOT and 'speak' is xcomp, so the modal is the HEAD of
+    the infinitive verb rather than a child — we check both directions.
     Flags the redundant 'to' token.
     """
     results = []
     for tok in doc:
-        if tok.pos_ != 'VERB' or tok.tag_ != 'VB':
+        if tok.tag_ != 'TO' or tok.dep_ != 'aux':
             continue
-        has_modal = any(c.tag_ == 'MD' and c.dep_ == 'aux' for c in tok.children)
-        to_tok = next((c for c in tok.children if c.tag_ == 'TO' and c.dep_ == 'aux'), None)
-        if has_modal and to_tok:
-            results.append((MODAL_TO_ERR, to_tok.text))
+        verb = tok.head
+        # modal as sibling aux child of the same verb
+        has_modal_sibling = any(c.tag_ == 'MD' and c.dep_ == 'aux' for c in verb.children)
+        # modal as the head of the verb (e.g. "can" ROOT → "speak" xcomp, "to" aux of speak)
+        head_is_modal = verb.head.tag_ == 'MD'
+        if has_modal_sibling or head_is_modal:
+            results.append((MODAL_TO_ERR, tok.text))
     return results
 
 
@@ -868,10 +1007,17 @@ def check_infinitive_after_prep(doc) -> list[tuple[str, str]]:
 
 
 # ── tiered check lists ────────────────────────────────────────────────────────
+# Tier 1 (always on): checks so structurally specific they cannot false-positive.
+# Run regardless of model confidence.
+CHECKS_TIER1 = [
+    check_have_participle,    # have/has/had + bare VB — structurally unambiguous
+    check_since_for_ago,      # since + NUMBER + TIME_UNIT — structurally unambiguous
+    check_incorrect_forms,    # known wrong irregular forms (goed, buyed...)
+]
+
 # Tier 2 (prob_err ≥ 0.35): high-precision, pattern-based rules with low false-positive risk.
 CHECKS_TIER2 = [
     check_spelling,
-    check_incorrect_forms,
     check_double_negative,
     check_negated_verb,
     check_missing_s,
@@ -880,7 +1026,6 @@ CHECKS_TIER2 = [
     check_pronoun_case,
     check_there_their_theyre,
     check_participial_adj,
-    check_since_for_ago,
     check_doubled_subject,
     check_redundant_pronoun,
     check_subject_ordering,
@@ -889,21 +1034,20 @@ CHECKS_TIER2 = [
     check_modal_have,
     check_gerund_after_verb,
     check_wrong_rel_pronoun,
-    check_have_participle,
     check_causative_form,
     check_modal_to,
     check_much_many,
     check_fewer_less,
+    check_word_order,    # frequency adverb after non-be verb — precise enough for T2
 ]
 
-# Tier 3 (prob_err ≥ 0.55): context-dependent rules with higher false-positive risk.
+# Tier 3 (prob_err ≥ 0.45): context-dependent rules with higher false-positive risk.
 # Only run when the model is fairly confident there's an error.
 CHECKS_TIER3 = [
     check_subject_verb_agreement,
     check_verb_tense,
     check_run_on,
     check_preposition,
-    check_word_order,
     check_modifier,
     check_parallelism,
     check_vague_pronoun,
@@ -912,7 +1056,7 @@ CHECKS_TIER3 = [
 ]
 
 TIER2_THRESHOLD = 0.35
-TIER3_THRESHOLD = 0.55
+TIER3_THRESHOLD = 0.45
 
 
 def classify_errors_tiered(sentence: str, prob_err: float) -> list[tuple[str, str]]:
@@ -920,10 +1064,12 @@ def classify_errors_tiered(sentence: str, prob_err: float) -> list[tuple[str, st
     Run rule-based checks appropriate for the model's confidence level.
     Returns (error_type, span) pairs, or [(UNKNOWN, '')] if nothing specific fires.
     """
-    if prob_err < TIER2_THRESHOLD:
-        return []
     doc = nlp(sentence)
     errors = []
+    for check in CHECKS_TIER1:
+        errors.extend(check(doc))
+    if prob_err < TIER2_THRESHOLD:
+        return errors  # only tier-1 results; no UNKNOWN fallback at this level
     for check in CHECKS_TIER2:
         errors.extend(check(doc))
     if prob_err >= TIER3_THRESHOLD:
