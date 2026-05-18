@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from spellchecker import SpellChecker
 
 from article_checker import check_articles
-from error_classifier import classify_errors_tiered, INCORRECT_FORMS, EMOTION_ING_TO_ED
+from error_classifier import classify_errors_tiered, INCORRECT_FORMS, EMOTION_ING_TO_ED, DOUBLE_CONJ, DESPITE_CLAUSE
 
 nlp = spacy.load("en_core_web_sm")
 spell = SpellChecker()
@@ -177,6 +177,15 @@ LESSONS = {
         "After 'have', 'has', or 'had', use the past participle form of the verb (often ending in -ed or an irregular form). "
         "E.g., 'I have finished' (not 'have finish'), 'she has gone' (not 'has go'), "
         "'they had eaten' (not 'had eat').",
+
+    "Double conjunction":
+        "Don't combine a subordinating conjunction (although, because, though, whereas) with a "
+        "coordinating conjunction (but, so, yet) or discourse connector (however) in the same clause — choose one structure. "
+        "E.g., 'Although I was tired, I kept going.' OR 'I was tired, but I kept going.' — not both.",
+
+    "'Despite' used as conjunction":
+        "'Despite' is a preposition, so it needs a noun or gerund (-ing form) — not a full clause. "
+        "Try 'Despite being tired, I kept going.' or swap it for 'although': 'Although I was tired, I kept going.'",
 
     "Grammatical error (unclassified)":
         "This sentence may contain a grammatical error that couldn't be automatically identified.",

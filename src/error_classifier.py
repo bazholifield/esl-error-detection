@@ -45,6 +45,8 @@ HAVE_PART       = "Missing past participle"
 MODAL_TO_ERR    = "Modal + infinitive error"
 MUCH_MANY       = "Much/many confusion"
 FEWER_LESS      = "Fewer/less error"
+DOUBLE_CONJ     = "Double conjunction"
+DESPITE_CLAUSE  = "'Despite' used as conjunction"
 UNKNOWN         = "Grammatical error (unclassified)"
 
 # ── word lists ─────────────────────────────────────────────────────────────────
@@ -218,6 +220,13 @@ GERUND_PREPS = {
     'about', 'in', 'of', 'at', 'for', 'without', 'before', 'after',
     'instead', 'despite', 'by', 'with', 'on', 'from', 'into', 'through',
 }
+
+# contrastive subordinators — almost exclusively concessive; pairing with 'but'/'yet' is an error
+CONTR_SUBORDINATORS = {'although', 'though', 'whereas'}
+# causal subordinator — pairing with 'so' is an error ('Because..., so...')
+CAUS_SUBORDINATORS  = {'because'}
+# nominative pronouns used to detect 'despite + full clause' errors
+NOMINATIVE_PRONOUNS = {'i', 'he', 'she', 'we', 'they', 'you'}
 
 # ── individual checks ──────────────────────────────────────────────────────────
 
@@ -552,6 +561,12 @@ def check_there_their_theyre(doc) -> list[tuple[str, str]]:
         elif lower == 'there':
             # "there" used as a possessive → should be "their"
             if tok.dep_ == 'poss' or (tok.pos_ == 'DET' and tok.dep_ != 'expl'):
+                results.append((THERE_THEIR, tok.text))
+            # spaCy parses "there bag" / "there country" as advmod rather than det,
+            # so also catch "there" (advmod) directly before a noun
+            elif (tok.dep_ == 'advmod'
+                  and tok.i + 1 < len(doc)
+                  and doc[tok.i + 1].tag_ in ('NN', 'NNS', 'NNP', 'NNPS')):
                 results.append((THERE_THEIR, tok.text))
 
         elif lower in ("they're", "theyre"):
@@ -1006,6 +1021,69 @@ def check_infinitive_after_prep(doc) -> list[tuple[str, str]]:
     return results
 
 
+def check_double_conjunction(doc) -> list[tuple[str, str]]:
+    """
+    Catches 'although/though/whereas + ... + but/yet/however' and 'because + ... + so':
+    'Although I was tired, but I kept going' → remove 'but' OR remove 'although'.
+    'Because it rained, so we stayed home'  → remove 'so'  OR remove 'because'.
+    Excludes 'not only...but also' (valid correlative pair).
+    """
+    has_contr_sub = any(
+        tok.text.lower() in CONTR_SUBORDINATORS and tok.dep_ == 'mark'
+        for tok in doc
+    )
+    has_caus_sub = any(
+        tok.text.lower() in CAUS_SUBORDINATORS and tok.dep_ == 'mark'
+        for tok in doc
+    )
+    if not (has_contr_sub or has_caus_sub):
+        return []
+
+    not_only_present = any(
+        tok.text.lower() == 'only'
+        and tok.i > 0
+        and doc[tok.i - 1].text.lower() == 'not'
+        for tok in doc
+    )
+
+    results = []
+    for tok in doc:
+        lower = tok.text.lower()
+        if has_contr_sub:
+            if lower in ('but', 'yet') and tok.dep_ == 'cc' and not not_only_present:
+                results.append((DOUBLE_CONJ, tok.text))
+            elif lower == 'however' and tok.pos_ == 'ADV':
+                results.append((DOUBLE_CONJ, tok.text))
+        if has_caus_sub and lower == 'so':
+            # spaCy tags connective "so" as ADV/advmod (not CCONJ/cc) when it heads a main clause
+            if tok.dep_ == 'cc' or (tok.pos_ == 'ADV' and tok.dep_ == 'advmod' and tok.head.pos_ == 'VERB'):
+                results.append((DOUBLE_CONJ, tok.text))
+    return results
+
+
+def check_despite_clause(doc) -> list[tuple[str, str]]:
+    """
+    Catches 'despite + full clause': 'Despite she was tired, she kept going.'
+    'Despite' is a preposition and must be followed by a noun or gerund, not a finite clause.
+    Skips correct gerund constructions: 'Despite it raining', 'Despite you not being there'.
+    """
+    results = []
+    tokens = list(doc)
+    for i, tok in enumerate(tokens):
+        if tok.text.lower() != 'despite':
+            continue
+        if i + 1 >= len(tokens):
+            continue
+        nxt = tokens[i + 1]
+        if nxt.text.lower() not in NOMINATIVE_PRONOUNS:
+            continue
+        # 'despite it being...' / 'despite you not being...' — correct gerund constructions
+        if any(t.tag_ == 'VBG' for t in tokens[i + 2: i + 4]):
+            continue
+        results.append((DESPITE_CLAUSE, tok.text))
+    return results
+
+
 # ── tiered check lists ────────────────────────────────────────────────────────
 # Tier 1 (always on): checks so structurally specific they cannot false-positive.
 # Run regardless of model confidence.
@@ -1039,6 +1117,8 @@ CHECKS_TIER2 = [
     check_much_many,
     check_fewer_less,
     check_word_order,    # frequency adverb after non-be verb — precise enough for T2
+    check_double_conjunction,
+    check_despite_clause,
 ]
 
 # Tier 3 (prob_err ≥ 0.45): context-dependent rules with higher false-positive risk.
