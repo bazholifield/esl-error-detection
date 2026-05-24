@@ -84,7 +84,7 @@ Trained for 5 epochs on Colab (GPU), evaluated on a held-out 20% split:
 
 After training, a threshold sweep (0.30–0.50) was run on the eval set to find the F1-optimal decision boundary for classifying a sentence as erroneous.
 
-The pipeline uses a threshold of **0.25** — lower than the F1-optimal value — which pushes recall close to 100% at the cost of some precision. The reasoning: it's better to run the rule-based checks on a sentence that turns out to be fine than to miss a real error entirely. False positives from the model don't matter much because if no rule fires on that sentence, nothing gets shown to the user anyway. The model is basically a first-pass filter: cast a wide net, then let the rules add specificity.
+The pipeline uses a threshold of **0.25** (lower than the F1-optimal value) which pushes recall close to 100% at the cost of some precision. The reasoning: it's better to run the rule-based checks on a sentence that turns out to be fine than to miss a real error entirely. False positives from the model don't matter much because if no rule fires on that sentence, nothing gets shown to the user anyway. The model is basically a first-pass filter: cast a wide net, then let the rules add specificity.
 
 ## Limitations
 
