@@ -59,7 +59,7 @@ def main():
             if text.lower() in ("quit", "exit", "q"):
                 break
             if text:
-                results = analyze(text, tokenizer, model, THRESHOLD)
+                results = analyze(text, tokenizer, model)
                 display(results)
 
 if __name__ == "__main__":
